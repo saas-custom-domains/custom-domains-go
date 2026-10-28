@@ -26,12 +26,12 @@ type App struct {
 }
 
 func (a *App) Handler() http.Handler {
-	// Rejects cross-site form posts (CSRF). It compares the browser's
-	// Origin with r.Host when Sec-Fetch-Site is missing, which is why
+	// Rejects cross-site form posts (CSRF). When the browser sends no
+	// Sec-Fetch-Site, it compares Origin with r.Host, which is why
 	// hostRouter sets r.Host to the customer's domain.
 	csrf := http.NewCrossOriginProtection()
 
-	// The dashboard and the endpoints called by the proxy and by Caddy.
+	// The dashboard, plus the endpoints the proxy and Caddy call.
 	app := http.NewServeMux()
 	app.HandleFunc("GET /{$}", a.dashboard)
 	app.HandleFunc("POST /brands/{id}/domains", a.addDomain)
@@ -49,11 +49,15 @@ func (a *App) Handler() http.Handler {
 	root := http.NewServeMux()
 	// Load balancers and Docker call this by IP address, so it skips
 	// the host check.
-	root.HandleFunc("GET /up", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("ok"))
-	})
-	root.Handle("/", a.hostRouter(csrf.Handler(app), csrf.Handler(tenant)))
+	root.HandleFunc("GET /up", health)
+	root.Handle("/", a.hostRouter(
+		csrf.Handler(app), csrf.Handler(tenant),
+	))
 	return root
+}
+
+func health(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte("ok"))
 }
 
 // Customer domains
@@ -62,7 +66,9 @@ func (a *App) brandHome(w http.ResponseWriter, r *http.Request) {
 	a.renderBrand(w, r, http.StatusOK, "")
 }
 
-func (a *App) renderBrand(w http.ResponseWriter, r *http.Request, status int, alert string) {
+func (a *App) renderBrand(
+	w http.ResponseWriter, r *http.Request, status int, alert string,
+) {
 	brand := brandFrom(r.Context())
 	links, err := a.store.Links(r.Context(), brand.ID)
 	if err != nil {
@@ -80,7 +86,8 @@ func (a *App) renderBrand(w http.ResponseWriter, r *http.Request, status int, al
 
 func (a *App) followLink(w http.ResponseWriter, r *http.Request) {
 	brand := brandFrom(r.Context())
-	url, err := a.store.LinkURL(r.Context(), brand.ID, r.PathValue("slug"))
+	slug := r.PathValue("slug")
+	url, err := a.store.LinkURL(r.Context(), brand.ID, slug)
 	if errors.Is(err, errNotFound) {
 		render(w, http.StatusNotFound, "notfound.html", map[string]any{
 			"Brand": brand, "Host": r.Host, "Path": r.URL.Path,
@@ -91,24 +98,26 @@ func (a *App) followLink(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err)
 		return
 	}
-	// 302, not 301: browsers cache a 301 forever, and links get edited.
+	// 302, not 301: browsers cache a 301 for good, and links change.
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
-// report is the form visitors post on the customer's domain. The brand
-// comes from the request's host, never from the form.
+// report is the form visitors post on the customer's domain. The
+// brand comes from the request's host, never from the form.
 func (a *App) report(w http.ResponseWriter, r *http.Request) {
 	brand := brandFrom(r.Context())
 	link := strings.TrimSpace(r.FormValue("link"))
 	if link == "" {
-		a.renderBrand(w, r, http.StatusUnprocessableEntity, "Tell us which link is broken.")
+		a.renderBrand(w, r, http.StatusUnprocessableEntity,
+			"Tell us which link is broken.")
 		return
 	}
-	if err := a.store.AddReport(r.Context(), brand.ID, link, a.clientIP(r)); err != nil {
+	err := a.store.AddReport(r.Context(), brand.ID, link, a.clientIP(r))
+	if err != nil {
 		serverError(w, err)
 		return
 	}
-	// A relative URL, so the browser stays on the customer's domain.
+	// A relative URL keeps the browser on the customer's domain.
 	http.Redirect(w, r, "/?reported", http.StatusSeeOther)
 }
 
@@ -127,7 +136,10 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 	a.renderDashboard(w, r, http.StatusOK, 0, "")
 }
 
-func (a *App) renderDashboard(w http.ResponseWriter, r *http.Request, status int, errBrand int64, errMsg string) {
+func (a *App) renderDashboard(
+	w http.ResponseWriter, r *http.Request,
+	status int, errBrand int64, errMsg string,
+) {
 	ctx := r.Context()
 	brands, err := a.store.Brands(ctx)
 	if err != nil {
@@ -147,7 +159,8 @@ func (a *App) renderDashboard(w http.ResponseWriter, r *http.Request, status int
 				views[i].Domains = append(views[i].Domains, d)
 			}
 		}
-		if views[i].Reports, err = a.store.ReportCount(ctx, b.ID); err != nil {
+		views[i].Reports, err = a.store.ReportCount(ctx, b.ID)
+		if err != nil {
 			serverError(w, err)
 			return
 		}
@@ -165,7 +178,8 @@ func (a *App) addDomain(w http.ResponseWriter, r *http.Request) {
 	dnsContact := strings.TrimSpace(r.FormValue("dns_contact"))
 
 	fail := func(msg string) {
-		a.renderDashboard(w, r, http.StatusUnprocessableEntity, brandID, msg)
+		a.renderDashboard(w, r,
+			http.StatusUnprocessableEntity, brandID, msg)
 	}
 	if !isValidHost(host) {
 		fail("That isn't a valid domain.")
@@ -181,8 +195,9 @@ func (a *App) addDomain(w http.ResponseWriter, r *http.Request) {
 		fail(host + " is already connected to a brand.")
 		return
 	}
-	if apiErr, ok := errors.AsType[*APIError](err); ok && apiErr.Code == "host_taken" {
-		fail(host + " is already connected to another SaaS Custom Domains account.")
+	apiErr, ok := errors.AsType[*APIError](err)
+	if ok && apiErr.Code == "host_taken" {
+		fail(host + " is already connected to another account.")
 		return
 	}
 	if err != nil {
@@ -206,7 +221,9 @@ func (a *App) removeDomain(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (a *App) withDomain(w http.ResponseWriter, r *http.Request, fn func(Domain) error) {
+func (a *App) withDomain(
+	w http.ResponseWriter, r *http.Request, fn func(Domain) error,
+) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	d, err := a.store.Domain(r.Context(), id)
 	if err == nil {
@@ -222,7 +239,8 @@ func (a *App) withDomain(w http.ResponseWriter, r *http.Request, fn func(Domain)
 // Webhooks from SaaS Custom Domains.
 // Events: https://docs.saascustomdomains.com/webhooks
 func (a *App) webhook(w http.ResponseWriter, r *http.Request) {
-	if !secureCompare(r.URL.Query().Get("token"), a.cfg.WebhookToken) {
+	token := r.URL.Query().Get("token")
+	if !secureCompare(token, a.cfg.WebhookToken) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -233,7 +251,8 @@ func (a *App) webhook(w http.ResponseWriter, r *http.Request) {
 			UUID string `json:"uuid"`
 		} `json:"domain"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&payload); err != nil {
+	body := http.MaxBytesReader(w, r.Body, 1<<20)
+	if err := json.NewDecoder(body).Decode(&payload); err != nil {
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
@@ -241,7 +260,8 @@ func (a *App) webhook(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	d, err := a.store.DomainByProviderUUID(ctx, payload.Domain.UUID)
 	if errors.Is(err, errNotFound) {
-		// Not ours, or already removed: acknowledge so it isn't retried.
+		// Not ours, or already removed: acknowledge it so it isn't
+		// retried.
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -272,7 +292,8 @@ func (a *App) webhook(w http.ResponseWriter, r *http.Request) {
 // caddyAsk is Caddy's on-demand TLS check (DOMAINS_PROVIDER=caddy).
 // 200 means issue a certificate, anything else means refuse.
 func (a *App) caddyAsk(w http.ResponseWriter, r *http.Request) {
-	ok, err := a.store.IsActiveHost(r.Context(), normalizeHost(r.URL.Query().Get("domain")))
+	host := normalizeHost(r.URL.Query().Get("domain"))
+	ok, err := a.store.IsActiveHost(r.Context(), host)
 	switch {
 	case err != nil:
 		serverError(w, err)
@@ -304,5 +325,6 @@ func render(w http.ResponseWriter, status int, name string, data any) {
 
 func serverError(w http.ResponseWriter, err error) {
 	slog.Error("request failed", "err", err)
-	http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	http.Error(w, "Internal Server Error",
+		http.StatusInternalServerError)
 }

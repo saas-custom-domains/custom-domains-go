@@ -65,17 +65,19 @@ func (s *Store) migrate() error {
 
 		CREATE TABLE IF NOT EXISTS links (
 			id INTEGER PRIMARY KEY,
-			brand_id INTEGER NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
+			brand_id INTEGER NOT NULL
+				REFERENCES brands(id) ON DELETE CASCADE,
 			slug TEXT NOT NULL,
 			url TEXT NOT NULL,
 			UNIQUE (brand_id, slug)
 		);
 
-		-- host is stored normalized (lowercase, no port, no trailing dot)
-		-- and is unique: one domain, one brand.
+		-- host is stored normalized (lowercase, no port, no
+		-- trailing dot) and is unique: one domain, one brand.
 		CREATE TABLE IF NOT EXISTS custom_domains (
 			id INTEGER PRIMARY KEY,
-			brand_id INTEGER NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
+			brand_id INTEGER NOT NULL
+				REFERENCES brands(id) ON DELETE CASCADE,
 			host TEXT NOT NULL UNIQUE,
 			status TEXT NOT NULL DEFAULT 'pending'
 				CHECK (status IN ('pending', 'active')),
@@ -86,7 +88,8 @@ func (s *Store) migrate() error {
 
 		CREATE TABLE IF NOT EXISTS reports (
 			id INTEGER PRIMARY KEY,
-			brand_id INTEGER NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
+			brand_id INTEGER NOT NULL
+				REFERENCES brands(id) ON DELETE CASCADE,
 			link TEXT NOT NULL,
 			client_ip TEXT NOT NULL,
 			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -109,12 +112,14 @@ func (s *Store) seed() error {
 
 // BrandByActiveHost is the lookup every request on a customer domain
 // depends on. Keep the UNIQUE index on custom_domains.host.
-func (s *Store) BrandByActiveHost(ctx context.Context, host string) (Brand, error) {
+func (s *Store) BrandByActiveHost(
+	ctx context.Context, host string,
+) (Brand, error) {
 	var b Brand
 	err := s.db.QueryRowContext(ctx, `
-		SELECT brands.id, brands.slug, brands.name FROM brands
-		JOIN custom_domains ON custom_domains.brand_id = brands.id
-		WHERE custom_domains.host = ? AND custom_domains.status = 'active'`,
+		SELECT b.id, b.slug, b.name FROM brands b
+		JOIN custom_domains d ON d.brand_id = b.id
+		WHERE d.host = ? AND d.status = 'active'`,
 		host).Scan(&b.ID, &b.Slug, &b.Name)
 	return b, notFound(err)
 }
@@ -206,12 +211,16 @@ func (s *Store) DomainByHost(ctx context.Context, host string) (Domain, error) {
 		`SELECT `+domainColumns+` FROM custom_domains WHERE host = ?`, host))
 }
 
-func (s *Store) InsertDomain(ctx context.Context, brandID int64, host string) (Domain, error) {
-	d, err := scanDomain(s.db.QueryRowContext(ctx,
-		`INSERT INTO custom_domains (brand_id, host) VALUES (?, ?) RETURNING `+domainColumns,
-		brandID, host))
-	var se *sqlite.Error
-	if errors.As(err, &se) && se.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE {
+func (s *Store) InsertDomain(
+	ctx context.Context, brandID int64, host string,
+) (Domain, error) {
+	d, err := scanDomain(s.db.QueryRowContext(ctx, `
+		INSERT INTO custom_domains (brand_id, host) VALUES (?, ?)
+		RETURNING `+domainColumns, brandID, host))
+	// The unique index on host is what stops two brands from
+	// connecting the same domain.
+	se, ok := errors.AsType[*sqlite.Error](err)
+	if ok && se.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE {
 		return d, errHostTaken
 	}
 	return d, err

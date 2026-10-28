@@ -36,41 +36,53 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
-	return fmt.Sprintf("saascustomdomains: %d %s: %s", e.StatusCode, e.Code, e.Message)
+	return fmt.Sprintf("saascustomdomains: %d %s: %s",
+		e.StatusCode, e.Code, e.Message)
 }
 
-func (c *SCDClient) CreateDomain(ctx context.Context, host, instructionsRecipient string) (SCDDomain, error) {
+func (c *SCDClient) CreateDomain(
+	ctx context.Context, host, dnsContact string,
+) (SCDDomain, error) {
 	body := map[string]string{"host": host}
-	if instructionsRecipient != "" {
+	if dnsContact != "" {
 		// We email this address the exact DNS records to add.
-		body["instructions_recipient"] = instructionsRecipient
+		body["instructions_recipient"] = dnsContact
 	}
 	var d SCDDomain
 	err := c.do(ctx, http.MethodPost, "", body, &d)
 	return d, err
 }
 
-// VerifyDNS runs a DNS check now and returns "valid", "pending" or "invalid".
-func (c *SCDClient) VerifyDNS(ctx context.Context, uuid string) (string, error) {
+// VerifyDNS checks DNS now. It returns "valid", "pending" or
+// "invalid".
+func (c *SCDClient) VerifyDNS(
+	ctx context.Context, uuid string,
+) (string, error) {
 	var res struct {
 		DNSStatus string `json:"dns_status"`
 	}
-	err := c.do(ctx, http.MethodPost, "/"+uuid+"/verify_dns_records", nil, &res)
+	path := "/" + uuid + "/verify_dns_records"
+	err := c.do(ctx, http.MethodPost, path, nil, &res)
 	return res.DNSStatus, err
 }
 
-func (c *SCDClient) DeleteDomain(ctx context.Context, uuid string) error {
+func (c *SCDClient) DeleteDomain(
+	ctx context.Context, uuid string,
+) error {
 	err := c.do(ctx, http.MethodDelete, "/"+uuid, nil, nil)
 	// Already gone is fine: the goal is that it doesn't exist.
-	if apiErr, ok := errors.AsType[*APIError](err); ok && apiErr.StatusCode == http.StatusNotFound {
+	apiErr, ok := errors.AsType[*APIError](err)
+	if ok && apiErr.StatusCode == http.StatusNotFound {
 		return nil
 	}
 	return err
 }
 
-func (c *SCDClient) do(ctx context.Context, method, path string, body, out any) error {
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/upstreams/%s/custom_domains%s",
-		c.BaseURL, c.Account, c.Upstream, path)
+func (c *SCDClient) do(
+	ctx context.Context, method, path string, body, out any,
+) error {
+	url := c.BaseURL + "/api/v1/accounts/" + c.Account +
+		"/upstreams/" + c.Upstream + "/custom_domains" + path
 
 	var reqBody io.Reader
 	if body != nil {

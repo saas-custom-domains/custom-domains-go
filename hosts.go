@@ -8,11 +8,12 @@ import (
 )
 
 // normalizeHost turns " Go.Acme.com.:443 " into "go.acme.com".
-// r.Host keeps whatever port the client used ("go.acme.localhost:3000"),
-// so every lookup has to go through this first.
+// r.Host keeps whatever port the client used, as in
+// "go.acme.localhost:3000", so every lookup goes through this first.
 func normalizeHost(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
-	if host, port, err := net.SplitHostPort(s); err == nil && isDigits(port) {
+	host, port, err := net.SplitHostPort(s)
+	if err == nil && isDigits(port) {
 		s = host
 	}
 	return strings.TrimSuffix(s, ".")
@@ -38,7 +39,7 @@ func isValidHost(host string) bool {
 	return true
 }
 
-// Hosts knows which hostnames belong to this app rather than to a customer.
+// Hosts knows which hostnames belong to this app, not to a customer.
 type Hosts struct {
 	// App lists the hostnames that serve the dashboard, e.g.
 	// "snip.example" plus any internal name your platform uses.
@@ -55,7 +56,10 @@ func (h Hosts) IsReserved(host string) bool {
 	if h.IsApp(host) {
 		return true
 	}
-	return h.Domain != "" && (host == h.Domain || strings.HasSuffix(host, "."+h.Domain))
+	if h.Domain == "" {
+		return false
+	}
+	return host == h.Domain || strings.HasSuffix(host, "."+h.Domain)
 }
 
 func isDigits(s string) bool {

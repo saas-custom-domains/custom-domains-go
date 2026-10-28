@@ -18,7 +18,9 @@ type DomainService struct {
 	dns   DNSCheck
 }
 
-func (s *DomainService) Add(ctx context.Context, brandID int64, host, dnsContact string) (Domain, error) {
+func (s *DomainService) Add(
+	ctx context.Context, brandID int64, host, dnsContact string,
+) (Domain, error) {
 	d, err := s.store.InsertDomain(ctx, brandID, host)
 	if err != nil {
 		return d, err
@@ -39,7 +41,9 @@ func (s *DomainService) Add(ctx context.Context, brandID int64, host, dnsContact
 }
 
 // Check asks for a DNS check now instead of waiting for the webhook.
-func (s *DomainService) Check(ctx context.Context, d Domain) (bool, error) {
+func (s *DomainService) Check(
+	ctx context.Context, d Domain,
+) (bool, error) {
 	var valid bool
 	if s.scd != nil && d.ProviderUUID != "" {
 		status, err := s.scd.VerifyDNS(ctx, d.ProviderUUID)
@@ -80,10 +84,12 @@ func (c DNSCheck) PointsAtUs(ctx context.Context, host string) bool {
 	if strings.HasSuffix(host, ".localhost") {
 		return true
 	}
-	if cname, err := net.DefaultResolver.LookupCNAME(ctx, host); err == nil &&
-		c.CNAMETarget != "" && normalizeHost(cname) == c.CNAMETarget {
+	cname, err := net.DefaultResolver.LookupCNAME(ctx, host)
+	if err == nil && normalizeHost(cname) == c.CNAMETarget {
 		return true
 	}
 	ips, _ := net.DefaultResolver.LookupHost(ctx, host)
-	return slices.ContainsFunc(ips, func(ip string) bool { return slices.Contains(c.ServerIPs, ip) })
+	return slices.ContainsFunc(ips, func(ip string) bool {
+		return slices.Contains(c.ServerIPs, ip)
+	})
 }

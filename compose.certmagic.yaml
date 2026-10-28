@@ -1,0 +1,25 @@
+# TLS in the Go binary itself, with certmagic and on-demand certificates:
+#
+#   docker compose -f compose.yaml -f compose.certmagic.yaml up --build
+#
+# Pebble, Let's Encrypt's test server, stands in for the real CA. It
+# skips domain validation (PEBBLE_VA_ALWAYS_VALID), because it can't
+# reach *.localhost on your machine.
+services:
+  app:
+    ports: ["${CADDY_PORT:-443}:8443"]
+    environment:
+      DOMAINS_PROVIDER: caddy
+      HTTPS_ADDR: :8443
+      ACME_CA: https://pebble:14000/dir
+      ACME_CA_ROOT: /etc/pebble/pebble.minica.pem
+    volumes:
+      - ./dev/pebble.minica.pem:/etc/pebble/pebble.minica.pem:ro
+    depends_on: [pebble]
+
+  pebble:
+    image: ghcr.io/letsencrypt/pebble:latest
+    command: -config test/config/pebble-config.json
+    environment:
+      PEBBLE_VA_ALWAYS_VALID: 1
+      PEBBLE_VA_NOSLEEP: 1

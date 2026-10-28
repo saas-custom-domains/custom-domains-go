@@ -1,0 +1,26 @@
+{{define "brand.html"}}{{template "head" .Brand.Name}}
+<h1>{{.Brand.Name}}</h1>
+<ul>
+  {{range .Links}}
+  <li><a class="mono" href="/{{.Slug}}">{{$.Host}}/{{.Slug}}</a> <span class="muted">{{.URL}}</span></li>
+  {{end}}
+</ul>
+<section>
+  <h2>Report a broken link</h2>
+  <form method="post" action="/report">
+    <label>Which link is broken? <input name="link" placeholder="{{.Host}}/launch"></label>
+    <p><button>Report</button></p>
+  </form>
+  {{if .Reported}}<p role="status">Thanks. {{.Brand.Name}} will take a look.</p>{{end}}
+  {{with .Alert}}<p role="alert">{{.}}</p>{{end}}
+</section>
+</body>
+</html>
+{{end}}
+
+{{define "notfound.html"}}{{template "head" "Link not found"}}
+<h1>No short link at {{.Host}}{{.Path}}</h1>
+<p>{{.Brand.Name}} may have removed it. <a href="/">See all links</a> or report it there.</p>
+</body>
+</html>
+{{end}}

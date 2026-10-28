@@ -1,0 +1,28 @@
+{{define "dashboard.html"}}{{template "head" "Snip dashboard"}}
+<h1>Snip dashboard</h1>
+<p class="muted">Connect a custom domain to each brand's short links.</p>
+{{range .}}
+<section data-testid="brand-{{.Slug}}">
+  <h2>{{.Name}}</h2>
+  <ul>
+    {{range .Domains}}
+    <li data-testid="domain-{{.Host}}">
+      <span class="mono">{{.Host}}</span>
+      <span class="badge{{if eq .Status "active"}} active{{end}}">{{statusLabel .}}</span>
+      <form method="post" action="/domains/{{.ID}}/check" class="push"><button>Check DNS</button></form>
+      <form method="post" action="/domains/{{.ID}}/remove"><button>Remove</button></form>
+    </li>
+    {{end}}
+  </ul>
+  <form method="post" action="/brands/{{.ID}}/domains">
+    <label>Domain <input name="host" placeholder="go.{{.Slug}}.com" value="{{.Input}}" required></label>
+    <label>DNS contact email (optional) <input name="dns_contact" type="email" placeholder="it@{{.Slug}}.com"></label>
+    <p><button>Add domain</button></p>
+    {{with .Error}}<p role="alert">{{.}}</p>{{end}}
+  </form>
+  <p class="muted">Broken link reports: {{.Reports}}</p>
+</section>
+{{end}}
+</body>
+</html>
+{{end}}

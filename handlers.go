@@ -31,14 +31,13 @@ func (a *App) Handler() http.Handler {
 	// hostRouter sets r.Host to the customer's domain.
 	csrf := http.NewCrossOriginProtection()
 
-	// The dashboard, plus the endpoints the proxy and Caddy call.
+	// The dashboard, plus the webhook SaaS Custom Domains calls.
 	app := http.NewServeMux()
 	app.HandleFunc("GET /{$}", a.dashboard)
 	app.HandleFunc("POST /brands/{id}/domains", a.addDomain)
 	app.HandleFunc("POST /domains/{id}/check", a.checkDomain)
 	app.HandleFunc("POST /domains/{id}/remove", a.removeDomain)
 	app.HandleFunc("POST /webhooks/saascustomdomains", a.webhook)
-	app.HandleFunc("GET /caddy/ask", a.caddyAsk)
 
 	// Customer domains: go.acme.com/launch redirects.
 	tenant := http.NewServeMux()
@@ -287,21 +286,6 @@ func (a *App) webhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// caddyAsk is Caddy's on-demand TLS check (DOMAINS_PROVIDER=caddy).
-// 200 means issue a certificate, anything else means refuse.
-func (a *App) caddyAsk(w http.ResponseWriter, r *http.Request) {
-	host := normalizeHost(r.URL.Query().Get("domain"))
-	ok, err := a.store.IsActiveHost(r.Context(), host)
-	switch {
-	case err != nil:
-		serverError(w, err)
-	case ok:
-		w.WriteHeader(http.StatusOK)
-	default:
-		w.WriteHeader(http.StatusNotFound)
-	}
 }
 
 func statusLabel(d Domain) string {

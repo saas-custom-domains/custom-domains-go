@@ -3,19 +3,14 @@ package main
 import (
 	"context"
 	"errors"
-	"net"
-	"slices"
-	"strings"
 )
 
 // DomainService adds, checks and removes custom domains, keeping the
-// database and the proxy in step. With SCD set, SaaS Custom Domains is
-// the proxy. Without it you run your own (Caddy, or certmagic in this
-// binary) and the app checks DNS itself.
+// database and SaaS Custom Domains in step. Whether a domain is live
+// comes from the API: verify_dns_records here, webhooks otherwise.
 type DomainService struct {
 	store *Store
-	scd   *SCDClient // nil when you run your own proxy
-	dns   DNSCheck
+	scd   *SCDClient
 }
 
 func (s *DomainService) Add(
@@ -23,11 +18,6 @@ func (s *DomainService) Add(
 ) (Domain, error) {
 	d, err := s.store.InsertDomain(ctx, brandID, host)
 	if err != nil {
-		return d, err
-	}
-	if s.scd == nil {
-		// Your own proxy: check DNS now, and again with "Check DNS".
-		_, err = s.Check(ctx, d)
 		return d, err
 	}
 
@@ -44,52 +34,26 @@ func (s *DomainService) Add(
 func (s *DomainService) Check(
 	ctx context.Context, d Domain,
 ) (bool, error) {
-	var valid bool
-	if s.scd != nil && d.ProviderUUID != "" {
-		status, err := s.scd.VerifyDNS(ctx, d.ProviderUUID)
-		if err != nil {
-			return false, err
-		}
-		valid = status == "valid"
-	} else {
-		valid = s.dns.PointsAtUs(ctx, d.Host)
+	status, err := s.scd.VerifyDNS(ctx, d.ProviderUUID)
+	if err != nil {
+		return false, err
 	}
-	status := "pending"
+	valid := status == "valid"
+	newStatus := "pending"
 	if valid {
-		status = "active"
+		newStatus = "active"
 	}
-	return valid, s.store.SetStatus(ctx, d.ID, status)
+	return valid, s.store.SetStatus(ctx, d.ID, newStatus)
 }
 
 // Remove deletes from the proxy first: if that fails, the row is still
 // here and the user can try again.
 func (s *DomainService) Remove(ctx context.Context, d Domain) error {
-	if s.scd != nil && d.ProviderUUID != "" {
-		if err := s.scd.DeleteDomain(ctx, d.ProviderUUID); err != nil {
+	if d.ProviderUUID != "" {
+		err := s.scd.DeleteDomain(ctx, d.ProviderUUID)
+		if err != nil {
 			return err
 		}
 	}
 	return s.store.DeleteDomain(ctx, d.ID)
-}
-
-// DNSCheck is used when you run the proxy yourself. With SaaS Custom
-// Domains, the API checks DNS for you.
-type DNSCheck struct {
-	CNAMETarget string   // what customers point a CNAME at
-	ServerIPs   []string // or A records, for root domains
-}
-
-func (c DNSCheck) PointsAtUs(ctx context.Context, host string) bool {
-	// *.localhost always resolves to this machine.
-	if strings.HasSuffix(host, ".localhost") {
-		return true
-	}
-	cname, err := net.DefaultResolver.LookupCNAME(ctx, host)
-	if err == nil && normalizeHost(cname) == c.CNAMETarget {
-		return true
-	}
-	ips, _ := net.DefaultResolver.LookupHost(ctx, host)
-	return slices.ContainsFunc(ips, func(ip string) bool {
-		return slices.Contains(c.ServerIPs, ip)
-	})
 }

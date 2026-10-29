@@ -1,6 +1,6 @@
 # Custom domains in Go
 
-An example Go app, standard library `net/http` only, where each customer serves its links on its own domain. It's a small link shortener, Snip: every brand has short links, and its owner can use `go.theircompany.com/launch` instead of a Snip URL.
+An example Go app, standard library `net/http` only, where each customer serves its links on its own domain, with [SaaS Custom Domains](https://saascustomdomains.com) handling routing and HTTPS for every domain. It's a small link shortener, Snip: every brand has short links, and its owner can use `go.theircompany.com/launch` instead of a Snip URL.
 
 It goes with the guide [How to Add Custom Domains to a Go App](https://saascustomdomains.com/blog/posts/custom-domains-go).
 
@@ -10,8 +10,7 @@ What's in it:
 - Requests from the [SaaS Custom Domains](https://saascustomdomains.com) proxy are accepted only with the upstream's auth token, so nobody can claim a customer's domain by sending `X-Served-For` themselves.
 - A "report a broken link" form on each customer domain, protected by Go's `http.CrossOriginProtection`, that works through the proxy (see [Forms and `http.CrossOriginProtection`](#forms-and-httpcrossoriginprotection)).
 - A dashboard to add a domain, check its DNS and remove it. Webhooks update the status.
-- Three ways to run HTTPS: SaaS Custom Domains (default), your own Caddy with on-demand TLS, or TLS in the Go binary itself with `certmagic`.
-- Dependencies: the standard library, `modernc.org/sqlite` (pure Go, no cgo) and `certmagic` for the optional TLS mode.
+- Dependencies: the standard library and `modernc.org/sqlite` (pure Go, no cgo).
 
 ## Run it in 2 minutes
 
@@ -31,17 +30,20 @@ docker compose up --build
 
 The mock is [scd-mock](https://github.com/saas-custom-domains/scd-mock): a local copy of the SaaS Custom Domains API and proxy, so you can try everything without an account.
 
-### Without Docker
+### Run the app outside Docker
 
-You need Go 1.27. With an older `go` on your path, the `toolchain` line in `go.mod` downloads 1.27 for you.
+Keep the mock in Docker and point it at `go run`:
 
 ```bash
+SCD_MOCK_UPSTREAM_HOST=host.docker.internal \
+SCD_MOCK_WEBHOOK_URL=http://host.docker.internal:3000/webhooks/saascustomdomains \
+  docker compose up scd-mock -d
 cp .env.example .env
 set -a; . ./.env; set +a
-DOMAINS_PROVIDER=caddy go run .
+go run .
 ```
 
-Add a domain such as `go.acme.localhost` and open http://go.acme.localhost:3000/launch. `DOMAINS_PROVIDER=caddy` means adding a domain doesn't call the API, and `*.localhost` domains count as pointed at you.
+You need Go 1.27. With an older `go` on your path, the `toolchain` line in `go.mod` downloads 1.27 for you.
 
 ## How it works
 
@@ -57,12 +59,11 @@ The proxy sends your app's own hostname in `Host` and `X-Forwarded-Host`, the wa
 | File | What it does |
 | --- | --- |
 | `tenant.go` | Checks the proxy token, picks the host, resolves the brand, puts it in the context |
-| `handlers.go` | The two `ServeMux`es (dashboard and customer sites), the webhook, Caddy's ask endpoint |
+| `handlers.go` | The two `ServeMux`es (dashboard and customer sites) and the webhook |
 | `hosts.go` | Host normalization, validation, `APP_HOSTS` and the reserved domain |
 | `store.go` | SQLite tables and queries, with a unique index on the host |
-| `domains.go` | Add, check and remove domains with either provider, plus the DIY DNS check |
+| `domains.go` | Add, check and remove domains, keeping the database and the API in step |
 | `scd.go` | API client for SaaS Custom Domains, with `net/http` |
-| `tls.go` | Optional on-demand TLS in the binary with `certmagic` |
 | `gotchas_test.go` | Pins the `net/http` behavior described below |
 
 ## Go gotchas
@@ -111,40 +112,6 @@ Load balancers and Docker call the health check by IP address, and the mock's we
 
 `hostRouter` stores the brand under an unexported key type, so no other package can overwrite it, and handlers call `brandFrom(r.Context())`. The report form never says which brand it's for: a form posted to `go.acme.com` can only ever be about Acme.
 
-## Run your own proxy instead (Caddy)
-
-```bash
-DOMAINS_PROVIDER=caddy docker compose --profile diy up --build
-```
-
-Add `go.acme.localhost` in the dashboard, then:
-
-```bash
-curl -k https://go.acme.localhost/launch
-```
-
-Caddy asks `/caddy/ask` before issuing a certificate, and only active domains get one. Locally it uses Caddy's internal CA, hence `-k`. In production you'd remove `internal` from the `Caddyfile` and run it on a server with a static IP.
-
-## Or terminate TLS in Go (certmagic)
-
-Set `HTTPS_ADDR` and the binary serves HTTPS itself with [certmagic](https://github.com/caddyserver/certmagic), the library inside Caddy. Certificates are requested on demand, during the first TLS handshake for a domain, and the `DecisionFunc` allows only active domains (the same check as Caddy's ask endpoint). The plain HTTP listener answers ACME HTTP-01 challenges.
-
-```bash
-docker compose -f compose.yaml -f compose.certmagic.yaml up --build
-```
-
-Add `go.acme.localhost`, then:
-
-```bash
-curl -k https://go.acme.localhost/launch
-```
-
-Locally the CA is [Pebble](https://github.com/letsencrypt/pebble), Let's Encrypt's test server, with domain validation switched off because it can't reach your machine. That exercises the whole on-demand path: the decision function, the ACME order, storage, and the dashboard turning **Live** when certmagic reports `cert_obtained`. A domain that isn't active gets no certificate, and the app logs `certificate is not allowed for server name evil.localhost: decision func: evil.localhost is not an active custom domain`. `dev/pebble.minica.pem` is Pebble's public test root, so the app trusts Pebble's API.
-
-What Pebble can't show is real validation: in production, ports 80 and 443 must be reachable from the internet, and your customers' DNS must point at your server. Try `ACME_CA=https://acme-staging-v02.api.letsencrypt.org/directory` on a server with a real domain first.
-
-After that, the job is yours: certificate storage shared by every instance (certmagic's default is the local disk), renewals, Let's Encrypt rate limits, a static IP or anycast for root domains, and abuse from domains pointed at you. That's what SaaS Custom Domains does for you.
-
 ## Use it with your SaaS Custom Domains account
 
 1. [Create an API token](https://app.saascustomdomains.com/api_tokens) and an upstream pointing at your deployed app.
@@ -176,9 +143,6 @@ CI runs both on every push and once a week, against the latest stable Go.
 | --- | --- |
 | Go | 1.27.3 |
 | modernc.org/sqlite | 1.61.0 |
-| certmagic | 0.25.6 |
-| Caddy | 2.11.7 |
-| Pebble | 2.10.1 |
 | Playwright | 1.64.1 |
 
 Last checked: 2026-10-28.

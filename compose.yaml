@@ -1,16 +1,12 @@
-# docker compose up                       app + SaaS Custom Domains mock
-# DOMAINS_PROVIDER=caddy docker compose --profile diy up
-#                                         app + your own Caddy instead
-# See compose.certmagic.yaml for TLS in the Go binary itself.
+# docker compose up    the app + a local stand-in for SaaS Custom Domains
 services:
   app:
     build: .
     ports: ["${APP_PORT:-3000}:3000"]
     environment:
-      # "app" is how the mock (webhooks) and Caddy reach this container.
+      # "app" is how the mock (webhooks) reaches this container.
       APP_HOSTS: localhost,app
       APP_DOMAIN: snip.example
-      DOMAINS_PROVIDER: ${DOMAINS_PROVIDER:-saascustomdomains}
       SCD_API_URL: http://scd-mock:4010
       SCD_API_TOKEN: scd_test_token
       SCD_ACCOUNT_UUID: acc_local
@@ -28,27 +24,19 @@ services:
   # a customer's domain would.
   scd-mock:
     image: ghcr.io/saas-custom-domains/scd-mock:latest
+    extra_hosts: ["host.docker.internal:host-gateway"]
     ports:
       - "${SCD_MOCK_API_PORT:-4010}:4010"
       - "${SCD_MOCK_PROXY_PORT:-80}:4080"
     environment:
-      SCD_MOCK_UPSTREAM_HOST: app
+      # host.docker.internal when the app runs outside Docker
+      SCD_MOCK_UPSTREAM_HOST: ${SCD_MOCK_UPSTREAM_HOST:-app}
       SCD_MOCK_UPSTREAM_PORT: 3000
       SCD_MOCK_UPSTREAM_AUTH_TOKEN: local_proxy_token
-      SCD_MOCK_WEBHOOK_URL: http://app:3000/webhooks/saascustomdomains
+      SCD_MOCK_WEBHOOK_URL: ${SCD_MOCK_WEBHOOK_URL:-http://app:3000/webhooks/saascustomdomains}
       SCD_MOCK_WEBHOOK_TOKEN: local_webhook_token
       # Test domains under .test count as pointed at the proxy.
       SCD_MOCK_VALID_HOSTS: "*.test"
 
-  # Run the proxy yourself: Caddy with on-demand TLS.
-  caddy:
-    image: caddy:2
-    profiles: [diy]
-    ports: ["${CADDY_PORT:-443}:443"]
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy:/data
-
 volumes:
   data:
-  caddy:

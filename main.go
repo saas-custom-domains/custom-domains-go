@@ -1,5 +1,6 @@
-// Snip is an example link shortener where each brand can serve its short
-// links on its own domain (go.acme.com/launch). It goes with the guide
+// Snip is an example link shortener where each brand can serve its
+// short links on its own domain (go.acme.com/launch), with SaaS Custom
+// Domains in front for routing and HTTPS. It goes with the guide
 // https://saascustomdomains.com/blog/posts/custom-domains-go
 package main
 
@@ -22,8 +23,6 @@ type Config struct {
 	DataDir   string
 	AppHosts  []string
 	AppDomain string
-	// "saascustomdomains" (default), or "caddy" if you run your own proxy.
-	DomainsProvider string
 
 	SCDAPIURL      string
 	SCDAPIToken    string
@@ -31,37 +30,21 @@ type Config struct {
 	SCDUpstream    string
 	ProxyAuthToken string // the upstream's auth token
 	WebhookToken   string
-
-	// Your own proxy only: what customers point their DNS at.
-	CNAMETarget string
-	ServerIPs   []string
-
-	// Optional: terminate TLS in this binary with certmagic.
-	HTTPSAddr  string
-	ACMECA     string
-	ACMECARoot string
-	ACMEEmail  string
 }
 
 func configFromEnv() Config {
 	return Config{
-		Port:            cmp.Or(os.Getenv("PORT"), "3000"),
-		DataDir:         cmp.Or(os.Getenv("DATA_DIR"), "data"),
-		AppHosts:        hostList(cmp.Or(os.Getenv("APP_HOSTS"), "localhost")),
-		AppDomain:       normalizeHost(os.Getenv("APP_DOMAIN")),
-		DomainsProvider: cmp.Or(os.Getenv("DOMAINS_PROVIDER"), "saascustomdomains"),
-		SCDAPIURL:       cmp.Or(os.Getenv("SCD_API_URL"), "https://app.saascustomdomains.com"),
-		SCDAPIToken:     os.Getenv("SCD_API_TOKEN"),
-		SCDAccount:      os.Getenv("SCD_ACCOUNT_UUID"),
-		SCDUpstream:     os.Getenv("SCD_UPSTREAM_UUID"),
-		ProxyAuthToken:  os.Getenv("PROXY_AUTH_TOKEN"),
-		WebhookToken:    os.Getenv("SCD_WEBHOOK_TOKEN"),
-		CNAMETarget:     normalizeHost(cmp.Or(os.Getenv("CNAME_TARGET"), "in.snip.example")),
-		ServerIPs:       hostList(os.Getenv("SERVER_IPS")),
-		HTTPSAddr:       os.Getenv("HTTPS_ADDR"),
-		ACMECA:          os.Getenv("ACME_CA"),
-		ACMECARoot:      os.Getenv("ACME_CA_ROOT"),
-		ACMEEmail:       os.Getenv("ACME_EMAIL"),
+		Port:      cmp.Or(os.Getenv("PORT"), "3000"),
+		DataDir:   cmp.Or(os.Getenv("DATA_DIR"), "data"),
+		AppHosts:  hostList(cmp.Or(os.Getenv("APP_HOSTS"), "localhost")),
+		AppDomain: normalizeHost(os.Getenv("APP_DOMAIN")),
+		SCDAPIURL: cmp.Or(os.Getenv("SCD_API_URL"),
+			"https://app.saascustomdomains.com"),
+		SCDAPIToken:    os.Getenv("SCD_API_TOKEN"),
+		SCDAccount:     os.Getenv("SCD_ACCOUNT_UUID"),
+		SCDUpstream:    os.Getenv("SCD_UPSTREAM_UUID"),
+		ProxyAuthToken: os.Getenv("PROXY_AUTH_TOKEN"),
+		WebhookToken:   os.Getenv("SCD_WEBHOOK_TOKEN"),
 	}
 }
 
@@ -93,79 +76,57 @@ func newApp(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
-	domains := &DomainService{
-		store: store,
-		dns:   DNSCheck{CNAMETarget: cfg.CNAMETarget, ServerIPs: cfg.ServerIPs},
-	}
-	if cfg.DomainsProvider == "saascustomdomains" {
-		domains.scd = &SCDClient{
-			BaseURL:  strings.TrimSuffix(cfg.SCDAPIURL, "/"),
-			Token:    cfg.SCDAPIToken,
-			Account:  cfg.SCDAccount,
-			Upstream: cfg.SCDUpstream,
-			HTTP:     http.DefaultClient,
-		}
+	scd := &SCDClient{
+		BaseURL:  strings.TrimSuffix(cfg.SCDAPIURL, "/"),
+		Token:    cfg.SCDAPIToken,
+		Account:  cfg.SCDAccount,
+		Upstream: cfg.SCDUpstream,
+		HTTP:     http.DefaultClient,
 	}
 	return &App{
 		cfg:     cfg,
 		hosts:   Hosts{App: cfg.AppHosts, Domain: cfg.AppDomain},
 		store:   store,
-		domains: domains,
+		domains: &DomainService{store: store, scd: scd},
 	}, nil
 }
 
 func run(cfg Config) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(),
+		os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	app, err := newApp(cfg)
 	if err != nil {
 		return err
 	}
-	handler := app.Handler()
-
-	servers := []*http.Server{{Addr: ":" + cfg.Port, Handler: handler}}
-	if cfg.HTTPSAddr != "" {
-		tlsServer, challenges, err := app.onDemandTLS(handler)
-		if err != nil {
-			return err
-		}
-		// ACME HTTP-01 challenges arrive over plain HTTP.
-		servers[0].Handler = challenges
-		servers = append(servers, tlsServer)
+	srv := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           app.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	errc := make(chan error, len(servers))
-	for _, srv := range servers {
-		srv.ReadHeaderTimeout = 10 * time.Second
-		go func() {
-			slog.Info("listening", "addr", srv.Addr, "tls", srv.TLSConfig != nil)
-			var err error
-			if srv.TLSConfig != nil {
-				err = srv.ListenAndServeTLS("", "")
-			} else {
-				err = srv.ListenAndServe()
-			}
-			if !errors.Is(err, http.ErrServerClosed) {
-				errc <- err
-			}
-		}()
-	}
+	errc := make(chan error, 1)
+	go func() {
+		slog.Info("listening", "addr", srv.Addr)
+		errc <- srv.ListenAndServe()
+	}()
 
 	select {
 	case err := <-errc:
-		return err
+		if !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
 	case <-ctx.Done():
 	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(),
+		10*time.Second)
 	defer cancel()
-	for _, srv := range servers {
-		srv.Shutdown(shutdownCtx)
-	}
-	return nil
+	return srv.Shutdown(shutdownCtx)
 }
 
-// healthcheck is for Docker's HEALTHCHECK: the runtime image has no curl.
+// healthcheck is for Docker's HEALTHCHECK: the runtime image has no
+// curl.
 func healthcheck() int {
 	port := cmp.Or(os.Getenv("PORT"), "3000")
 	res, err := http.Get("http://127.0.0.1:" + port + "/up")

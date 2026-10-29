@@ -19,12 +19,11 @@ const (
 func newTestApp(t *testing.T, opts ...func(*Config)) *App {
 	t.Helper()
 	cfg := Config{
-		DataDir:         t.TempDir(),
-		AppHosts:        []string{"localhost", "app"},
-		AppDomain:       "snip.example",
-		DomainsProvider: "caddy",
-		ProxyAuthToken:  testProxyToken,
-		WebhookToken:    testWebhookToken,
+		DataDir:        t.TempDir(),
+		AppHosts:       []string{"localhost", "app"},
+		AppDomain:      "snip.example",
+		ProxyAuthToken: testProxyToken,
+		WebhookToken:   testWebhookToken,
 	}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -34,6 +33,7 @@ func newTestApp(t *testing.T, opts ...func(*Config)) *App {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { app.store.db.Close() })
+	app.domains.scd = fakeAPI(t, okAPI)
 
 	ctx := context.Background()
 	acme, err := app.store.InsertDomain(ctx, 1, "go.acme.test")
@@ -242,13 +242,12 @@ func TestAddDomain(t *testing.T) {
 		}
 	}
 
-	// Without SaaS Custom Domains, the app checks DNS itself, and
-	// *.localhost always points at us.
-	if w := add("go.initech.localhost"); w.Code != 303 {
+	// A new domain stays pending until the API says DNS is right.
+	if w := add("go.initech.test"); w.Code != 303 {
 		t.Fatalf("got %d %q", w.Code, w.Body)
 	}
-	if w := serve(app, request("GET", "go.initech.localhost:3000", "/launch")); w.Code != 302 {
-		t.Errorf("new domain: got %d, want 302", w.Code)
+	if w := serve(app, request("GET", "go.initech.test", "/launch")); w.Code != 404 {
+		t.Errorf("pending domain: got %d, want 404", w.Code)
 	}
 }
 
@@ -261,27 +260,5 @@ func TestRemoveDomain(t *testing.T) {
 	}
 	if w := serve(app, request("GET", "go.acme.test", "/launch")); w.Code != 404 {
 		t.Errorf("removed domain: got %d, want 404", w.Code)
-	}
-}
-
-func TestCaddyAsk(t *testing.T) {
-	app := newTestApp(t)
-	for host, want := range map[string]int{"go.acme.test": 200, "go.globex.test": 404, "evil.test": 404} {
-		if w := serve(app, request("GET", "app:3000", "/caddy/ask?domain="+host)); w.Code != want {
-			t.Errorf("%s: got %d, want %d", host, w.Code, want)
-		}
-	}
-}
-
-func TestAllowCertificate(t *testing.T) {
-	app := newTestApp(t)
-	ctx := context.Background()
-	if err := app.allowCertificate(ctx, "go.acme.test"); err != nil {
-		t.Errorf("active domain: %v", err)
-	}
-	for _, host := range []string{"go.globex.test", "evil.test"} {
-		if err := app.allowCertificate(ctx, host); err == nil {
-			t.Errorf("%s: got a certificate", host)
-		}
 	}
 }

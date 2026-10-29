@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -21,6 +22,20 @@ func fakeAPI(t *testing.T, handler http.HandlerFunc) *SCDClient {
 	}))
 	t.Cleanup(srv.Close)
 	return &SCDClient{BaseURL: srv.URL, Token: "scd_token", Account: "acc", Upstream: "up", HTTP: srv.Client()}
+}
+
+// okAPI accepts every call, like the API for a domain that points at
+// the proxy.
+func okAPI(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/verify_dns_records"):
+		w.Write([]byte(`{"dns_status":"valid"}`))
+	case r.Method == "POST":
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"uuid":"dom_new","status":"pending_check"}`))
+	default:
+		w.Write([]byte(`{}`))
+	}
 }
 
 const domainsPath = "/api/v1/accounts/acc/upstreams/up/custom_domains"
@@ -105,5 +120,19 @@ func TestAddDomainStoresTheProviderUUID(t *testing.T) {
 	stored, _ := app.store.DomainByHost(context.Background(), "go.new.com")
 	if stored.ProviderUUID != "dom_new" {
 		t.Errorf("provider_uuid = %q", stored.ProviderUUID)
+	}
+}
+
+func TestCheckDomainUsesTheAPI(t *testing.T) {
+	app := newTestApp(t)
+	ctx := context.Background()
+	d, _ := app.store.DomainByHost(ctx, "go.globex.test")
+	w := serve(app, request("POST", "localhost", "/domains/"+itoa(d.ID)+"/check"))
+	if w.Code != 303 {
+		t.Fatalf("got %d", w.Code)
+	}
+	d, _ = app.store.DomainByHost(ctx, "go.globex.test")
+	if d.Status != "active" {
+		t.Errorf("status = %q, want active after a valid DNS check", d.Status)
 	}
 }
